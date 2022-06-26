@@ -19,7 +19,6 @@ package com.wtb.csvutil
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,8 +38,27 @@ import java.util.zip.ZipOutputStream
 import kotlin.reflect.KClass
 import kotlin.reflect.KProperty1
 
-class CSVUtils(private val ctx: AppCompatActivity) {
-    fun export(vararg itemLists: CSVConvertiblePackExport<*>) {
+/**
+ * Contains functions that allow converting objects to/from CSV
+ *
+ * @property activity
+ */
+class CSVUtils(private val activity: AppCompatActivity) {
+    /**
+     * Creates CSV files for the items described in [exportPacks], zips those files, then launches a
+     * chooser from [activity] to save the zip file
+     *
+     * @param exportPacks call [CSVConvertible.getConvertPackExport] on the items you would like to
+     * export
+     */
+    fun export(vararg exportPacks: CSVConvertiblePackExport<*>) {
+        /**
+         * Creates a [File] named [fileName] in the directory returned by [Context.getFilesDir]
+         *
+         * @param context
+         * @param fileName the name for the file to be created
+         * @return the created file, null if it was not created
+         */
         fun generateFile(context: Context, fileName: String): File? {
             val csvFile = File(context.filesDir, fileName)
             csvFile.createNewFile()
@@ -52,6 +70,13 @@ class CSVUtils(private val ctx: AppCompatActivity) {
             }
         }
 
+        /**
+         * Creates a zip file containing the files passed in [files]
+         *
+         * @param context
+         * @param files the files to be zipped
+         * @return a zip file containing the files in [files]
+         */
         fun zipFiles(context: Context, vararg files: File): File {
             val outFile = File(context.filesDir, getZipFileName())
             val zipOut = ZipOutputStream(BufferedOutputStream(outFile.outputStream()))
@@ -69,10 +94,16 @@ class CSVUtils(private val ctx: AppCompatActivity) {
             return outFile
         }
 
+        /**
+         * Creates an [Intent.ACTION_SEND] intent for [file]
+         *
+         * @param file the [File] to be sent
+         * @return an [Intent.ACTION_SEND] intent for [file]
+         */
         fun getSendFilesIntent(file: File): Intent {
             val intent = Intent(Intent.ACTION_SEND)
             val contentUri = FileProvider.getUriForFile(
-                ctx, "${ctx.packageName}.fileprovider", file
+                activity, "${activity.packageName}.fileprovider", file
             )
             intent.data = contentUri
             intent.putExtra(Intent.EXTRA_STREAM, contentUri)
@@ -82,10 +113,14 @@ class CSVUtils(private val ctx: AppCompatActivity) {
             return intent
         }
 
-        fun <T : Any> exportData(
-            csvFile: File,
-            convert: CSVConvertiblePackExport<T>
-        ) {
+        /**
+         * Converts the objects in [convert] and writes them to [csvFile]
+         *
+         * @param T the class of the objects to be exported
+         * @param csvFile the file to write the objects' data to
+         * @param convert the [CSVConvertiblePackExport] for the objects to be exported
+         */
+        fun <T : Any> exportData(csvFile: File, convert: CSVConvertiblePackExport<T>) {
             csvWriter().open(csvFile, append = false) {
                 writeRow(convert.headerList)
                 convert.items.ifEmpty { null }?.forEach {
@@ -96,16 +131,16 @@ class CSVUtils(private val ctx: AppCompatActivity) {
 
         val csvFiles = mutableListOf<File>()
 
-        itemLists.forEach {
-            val outFile: File? = generateFile(ctx, it.fileName)
+        exportPacks.forEach {
+            val outFile: File? = generateFile(activity, it.fileName)
 
             if (outFile != null) {
                 exportData(outFile, it)
                 csvFiles.add(outFile)
             } else {
-                ctx.runOnUiThread {
+                activity.runOnUiThread {
                     Toast.makeText(
-                        ctx,
+                        activity,
                         "Error creating file ${it.fileName}",
                         Toast.LENGTH_LONG
                     ).show()
@@ -113,34 +148,70 @@ class CSVUtils(private val ctx: AppCompatActivity) {
             }
         }
 
-        val zipFile: File = zipFiles(ctx, *csvFiles.toTypedArray())
+        val zipFile: File = zipFiles(activity, *csvFiles.toTypedArray())
 
         csvFiles.forEach { it.delete() }
 
-        ctx.runOnUiThread {
+        activity.runOnUiThread {
             ContextCompat.startActivity(
-                ctx,
+                activity,
                 Intent.createChooser(getSendFilesIntent(zipFile), null),
                 null
             )
         }
     }
 
+    /**
+     * Launches the [activityResultLauncher] returned by [getContentLauncher]. It will launch a
+     * prompt for the user to select a file to import, and will handle the result of the import
+     * using the values passed to [getContentLauncher]
+     *
+     * @param activityResultLauncher
+     */
     fun import(activityResultLauncher: ActivityResultLauncher<String>) {
-        ctx.runOnUiThread {
+        activity.runOnUiThread {
             activityResultLauncher.launch("application/zip")
         }
     }
 
+    /**
+     * Creates an [ActivityResultLauncher] that will prompt the user to choose a file when it is
+     * launched, and handle the objects imported from the file using [action]. This must be called
+     * as part of [activity]'s initialization and the result passed to [import] when it is called
+     *
+     * @param importPacks call [getConvertPackImport] on the classes of the objects to be imported
+     * @param action a handler for the [ModelMap] t
+     * @param exceptionHandler a handler for any exceptions that are raised by [action]
+     * @return an [ActivityResultLauncher] that is needed to call [import]
+     */
+    fun getContentLauncher(
+        importPacks: List<CSVConvertiblePackImport<*, *>>,
+        action: (ModelMap) -> Unit,
+        exceptionHandler: ((Exception) -> Unit)? = null
+    ): ActivityResultLauncher<String> =
+        activity.registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+            uri?.let {
+                activity.contentResolver.query(it, null, null, null, null)
+                    ?.use { cursor ->
+                        cursor.moveToFirst()
+                        try {
+                            extractZip(it, importPacks, action, exceptionHandler)
+                        } catch (e: SecurityException) {
+
+                        }
+                    }
+            }
+        }
+
     private fun extractZip(
         uri: Uri,
-        kList: List<CSVConvertiblePackImport<*, *>>,
+        importPacks: List<CSVConvertiblePackImport<*, *>>,
         action: (ModelMap) -> Unit,
         exceptionHandler: ((Exception) -> Unit)?
     ) {
         fun extractToFileInputStream(nextEntry: ZipEntry, zipIn: ZipInputStream): FileInputStream {
-            val res = File(ctx.filesDir, nextEntry.name)
-            if (!res.canonicalPath.startsWith(ctx.filesDir.canonicalPath)) {
+            val res = File(activity.filesDir, nextEntry.name)
+            if (!res.canonicalPath.startsWith(activity.filesDir.canonicalPath)) {
                 throw SecurityException()
             }
             FileOutputStream(res).use { t ->
@@ -149,11 +220,11 @@ class CSVUtils(private val ctx: AppCompatActivity) {
             return FileInputStream(res)
         }
 
-        ZipInputStream(ctx.contentResolver.openInputStream(uri)).use { zipIn ->
+        ZipInputStream(activity.contentResolver.openInputStream(uri)).use { zipIn ->
             var nextEntry: ZipEntry? = zipIn.nextEntry
             val imports = ModelMap()
             val headerMap = mutableMapOf<Set<String>, KClass<out CSVConvertible<*>>>().apply {
-                kList.forEach { ccpi ->
+                importPacks.forEach { ccpi ->
                     this[ccpi.headers] = ccpi.kClass
                 }
             }
@@ -163,17 +234,13 @@ class CSVUtils(private val ctx: AppCompatActivity) {
                 val csvIn: List<Map<String, String>> = csvReader().readAllWithHeader(inputStream)
                 val headers: Set<String> = csvIn.ifEmpty { null }?.get(0)?.keys ?: emptySet()
 
-
                 val cls: KClass<out CSVConvertible<*>>? = headerMap[headers]
 
                 cls?.let {
                     try {
-                        imports[it] =
-                            csvIn.mapNotNull { b: Map<String, String> ->
-                                it.objectInstance?.fromCSV(
-                                    b
-                                )
-                            }
+                        imports[it] = csvIn.mapNotNull { b: Map<String, String> ->
+                            it.objectInstance?.fromCSV(b)
+                        }
                     } catch (e: Exception) {
                         exceptionHandler?.let { exc -> exc(e) }
                     }
@@ -188,32 +255,6 @@ class CSVUtils(private val ctx: AppCompatActivity) {
         }
     }
 
-    @Suppress("SameParameterValue")
-    fun getContentLauncher(
-        prefix: String,
-        kList: List<CSVConvertiblePackImport<*, *>>,
-        action: (ModelMap) -> Unit,
-        exceptionHandler: ((Exception) -> Unit)? = null
-    ): ActivityResultLauncher<String> =
-        ctx.registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-            uri?.let {
-                ctx.contentResolver.query(it, null, null, null, null)
-                    ?.use { cursor ->
-                        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        cursor.moveToFirst()
-                        val fileName = cursor.getString(nameIndex)
-                        if (fileName.startsWith(prefix)) {
-                            try {
-                                extractZip(it, kList, action, exceptionHandler)
-                            } catch (e: SecurityException) {
-
-                            }
-                        }
-                    }
-            }
-        }
-
-
     companion object {
         const val FILE_ZIP = "location_module_"
 
@@ -225,14 +266,25 @@ class CSVUtils(private val ctx: AppCompatActivity) {
     }
 }
 
-class CSVConvertiblePackExport<T : Any>(
+/**
+ * Stores a list of objects and the information required to export them.
+ *
+ * @param T the class of the objects being exported
+ */
+data class CSVConvertiblePackExport<T : Any>(
     val items: List<T>,
     val fileName: String,
     val asList: (T) -> List<*>,
     val headerList: List<String>,
 )
 
-class CSVConvertiblePackImport<T : Any, U : CSVConvertible<T>>(
+/**
+ * Stores a class and its property/column header names
+ *
+ * @param T the class of the objects being imported
+ * @param U the CSVConvertible<T> companion object
+ */
+data class CSVConvertiblePackImport<T : Any, U : CSVConvertible<T>>(
     val kClass: KClass<out U>,
     val headers: Set<String>,
 )
@@ -275,6 +327,12 @@ interface CSVConvertible<T : Any> {
         return res
     }
 
+    /**
+     * Creates a [CSVConvertiblePackExport] that can be passed to [CSVUtils.export]
+     *
+     * @param items the items that will be exported
+     * @return a [CSVConvertiblePackExport]
+     */
     fun getConvertPackExport(items: List<T>): CSVConvertiblePackExport<T> =
         CSVConvertiblePackExport(
             items,
@@ -296,11 +354,19 @@ interface CSVConvertible<T : Any> {
     )
 }
 
+/**
+ * Creates a [CSVConvertiblePackImport] that can be passed to [CSVUtils.getContentLauncher]
+ *
+ * @param T the class being imported
+ * @param U the [CSVConvertible] companion object of [T]
+ * @return a [CSVConvertiblePackImport]
+ */
 inline fun <reified T : Any, reified U : CSVConvertible<T>> U.getConvertPackImport(): CSVConvertiblePackImport<T, U> =
     CSVConvertiblePackImport(
         U::class,
         headerList
     )
+
 
 /**
  * A wrapper for a mutable map of CSVConvertible<T> KClass to List<T>
@@ -311,14 +377,11 @@ class ModelMap {
     val modelMap: Map<KClass<*>, List<*>>
         get() = _modelMap
 
-    operator fun set(key: KClass<out Any>, value: List<Any>) {
+    internal operator fun set(key: KClass<*>, value: List<*>) {
         _modelMap[key] = value
     }
-
-    operator fun get(cls: KClass<*>): List<*>? = modelMap[cls]
 
     @Suppress("UNCHECKED_CAST")
     inline fun <reified T : Any, reified U : CSVConvertible<T>> get(): List<T> =
         modelMap[U::class] as List<T>? ?: listOf()
 }
-
