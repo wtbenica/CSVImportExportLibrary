@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.wtb.csvutil
+package dev.benica.csvutil
 
 import android.content.Context
 import android.content.Intent
@@ -27,7 +27,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.github.doyaaaaaken.kotlincsv.dsl.csvReader
 import com.github.doyaaaaaken.kotlincsv.dsl.csvWriter
-import com.wtb.csvutil.CSVUtils.Companion.dtf
+import dev.benica.csvutil.CSVUtils.Companion.dtf
 import java.io.*
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -336,7 +336,7 @@ interface CSVConvertible<T : Any> {
     fun getConvertPackExport(items: List<T>): CSVConvertiblePackExport<T> =
         CSVConvertiblePackExport(
             items,
-            saveFileName + "_" + LocalDateTime.now().format(dtf),
+            "${saveFileName}_${LocalDateTime.now().format(dtf)}.csv",
             ::asList,
             getColumns().map(Column<T>::headerName)
         )
